@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="nl">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Gebedstijden + Streak (MVP)</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <main class="container">
+      <h1>Gebedstijden</h1>
+      <p class="subtitle">Minimalistische MVP met Flask + localStorage</p>
+
+      <section class="card">
+        <label for="locationInput" class="label">Locatie (stad, land) of coördinaten (lat,lon)</label>
+        <div class="row">
+          <input id="locationInput" class="input" type="text" placeholder="Eindhoven, Netherlands of 51.44,5.47" />
+          <button id="fetchBtn" class="btn">Ophalen</button>
+        </div>
+        <p class="hint">Voorbeeld stad: "Eindhoven" of "Eindhoven, Netherlands". Voorbeeld coördinaten: "51.44, 5.47".</p>
+        <div id="status" class="status"></div>
+      </section>
+
+      <section id="results" class="card" hidden>
+        <h2>Vandaag</h2>
+        <div id="dateBox" class="date-box"></div>
+
+        <table class="times">
+          <thead>
+            <tr>
+              <th>Gebed</th>
+              <th>Tijd</th>
+              <th>Gedaan</th>
+            </tr>
+          </thead>
+          <tbody id="timesBody">
+            <!-- Dynamisch gevuld door JS -->
+          </tbody>
+        </table>
+      </section>
+
+      <section class="card streak">
+        <div class="streak-row">
+          <div>
+            <h2>Dagelijkse streak</h2>
+            <p class="muted">Wordt opgeslagen in je browser (localStorage)</p>
+          </div>
+          <div class="streak-value" id="streakValue">0</div>
+        </div>
+        <p class="hint">De streak telt door als alle 5 gebeden van een dag zijn afgevinkt. (MVP: terugdraaien bij uitvinken gebeurt niet automatisch.)</p>
+      </section>
+
+      <footer class="muted small">
+        Bron: <a href="https://aladhan.com/prayer-times-api" target="_blank">AlAdhan API</a>. Geen logins of database; alles lokaal.
+      </footer>
+    </main>
+
+    <script>
+      // --- Config & helpers ---
+      const PRAYERS = ["Fajr", "Dhuhr", "Asr", "Maghrib", "Isha"];
+
+      function todayKey() {
+        const now = new Date();
+        const y = now.getFullYear();
+        const m = String(now.getMonth() + 1).padStart(2, "0");
+        const d = String(now.getDate()).padStart(2, "0");
+        return `${y}-${m}-${d}`; // YYYY-MM-DD
+      }
+
+      function yesterdayKey() {
+        const n = new Date();
+        n.setDate(n.getDate() - 1);
+        const y = n.getFullYear();
+        const m = String(n.getMonth() + 1).padStart(2, "0");
+        const d = String(n.getDate()).padStart(2, "0");
+        return `${y}-${m}-${d}`;
+      }
+
+      function getProgress(dateKey) {
+        const raw = localStorage.getItem(`progress:${dateKey}`);
+        if (!raw) return null;
+        try { return JSON.parse(raw); } catch { return null; }
+      }
+
+      function saveProgress(dateKey, obj) {
+        localStorage.setItem(`progress:${dateKey}`, JSON.stringify(obj));
+      }
+
+      function getStreak() {
+        const raw = localStorage.getItem("streak:value");
+        return raw ? parseInt(raw, 10) : 0;
+      }
+
+      function setStreak(val) {
+        localStorage.setItem("streak:value", String(val));
+        document.getElementById("streakValue").textContent = String(val);
+      }
+
+      function getStreakLastDate() {
+        return localStorage.getItem("streak:last_date");
+      }
+
+      function setStreakLastDate(dateKey) {
+        localStorage.setItem("streak:last_date", dateKey);
+      }
+
+      function updateStreakIfCompletedAll(dateKey, allChecked) {
+        if (!allChecked) return; // MVP: niet automatisch verlagen bij uitvinken
+
+        const lastDate = getStreakLastDate();
+        const streak = getStreak();
+
+        if (lastDate === dateKey) {
+            // Al geteld voor vandaag; niets doen
+            return;
+        }
+
+        const yKey = yesterdayKey();
+        let next = 1;
+        if (lastDate === yKey) {
+          next = streak + 1; // aaneengesloten dagen
+        }
+        setStreak(next);
+        setStreakLastDate(dateKey);
+      }
+
+      function renderTimings(timings) {
+        const tbody = document.getElementById("timesBody");
+        tbody.innerHTML = "";
+        const dKey = todayKey();
+        const progress = getProgress(dKey) || {};
+
+        let allChecked = true;
+
+        PRAYERS.forEach((name) => {
+          const time = timings?.[name] || "--:--";
+          const id = `chk-${name}`;
+          const checked = Boolean(progress[name]);
+          if (!checked) allChecked = false;
+
+          const tr = document.createElement("tr");
+          tr.innerHTML = `
+            <td>${name}</td>
+            <td>${time}</td>
+            <td><input type="checkbox" id="${id}" ${checked ? "checked" : ""} /></td>
+          `;
+          tbody.appendChild(tr);
+
+          const cb = tr.querySelector("input");
+          cb.addEventListener("change", () => {
+            const current = getProgress(dKey) || {};
+            current[name] = cb.checked;
+            saveProgress(dKey, current);
+            const allNow = PRAYERS.every(p => Boolean((getProgress(dKey) || {})[p]));
+            updateStreakIfCompletedAll(dKey, allNow);
+          });
+        });
+
+        // Edge case: als alles al afgevinkt is bij laden
+        updateStreakIfCompletedAll(dKey, allChecked);
+      }
+
+      async function fetchTimes() {
+        const loc = document.getElementById("locationInput").value.trim();
+        const statusEl = document.getElementById("status");
+        const results = document.getElementById("results");
+        const dateBox = document.getElementById("dateBox");
+
+        if (!loc) {
+          statusEl.textContent = "Voer een locatie in.";
+          results.hidden = true;
+          return;
+        }
+
+        statusEl.textContent = "Aan het laden...";
+        results.hidden = true;
+
+        try {
+          const res = await fetch(`/api/prayer-times?location=${encodeURIComponent(loc)}`);
+          const data = await res.json();
+          if (!res.ok) throw new Error(data?.error || "Onbekende fout");
+
+          statusEl.textContent = "";
+          results.hidden = false;
+          const g = data?.date?.gregorian || data?.date?.readable || todayKey();
+          const h = data?.date?.hijri ? ` (Hijri: ${data.date.hijri})` : "";
+          dateBox.textContent = `Datum: ${g}${h}`;
+          renderTimings(data.timings);
+        } catch (err) {
+          statusEl.textContent = `Fout bij ophalen: ${err.message}`;
+          results.hidden = true;
+        }
+      }
+
+      // Init UI
+      document.getElementById("fetchBtn").addEventListener("click", fetchTimes);
+      document.getElementById("streakValue").textContent = String(getStreak());
+    </script>
+  </body>
+  </html>
+
